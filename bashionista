@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+
+set -euo pipefail;
+
+test -z "${DEBUG:-}" || {
+    set -x
+}
+
+function bashionista_payload ()
+{
+    function ${BASHIONISTA_PREFIX}_help ()
+    {
+        printf 'Synopsis:\n  ${BASHIONISTA_PREFIX} ${BASHIONISTA_SYNOPSIS}\n\nSubcommands:\n';
+        declare -F | while IFS='_' read -r before name; do
+            [[ "${before:-}" == *$BASHIONISTA_PREFIX ]] || continue;
+            printf "${name:-} ";
+            "_${name:-}_synopsis" 2> /dev/null || true;
+            printf '\n';
+            {
+                "_${name:-}_description" 2> /dev/null || true
+            } | sed 's/^/  /g';
+        done | sed 's/^/  /g'
+    };
+    function ${BASHIONISTA_PREFIX}_completion ()
+    {
+        ! type "_${BASHIONISTA_PREFIX}_completion" &> /dev/null || {
+            "_${BASHIONISTA_PREFIX}_completion"
+            return
+        }
+        printf 'complete -W "';
+        declare -F | while IFS='_' read -r before name; do
+            [[ "${before:-}" == *$BASHIONISTA_PREFIX ]] || continue;
+            printf '%s ' "${name:-}";
+        done;
+        printf '" ${BASHIONISTA_PREFIX};\n'
+    }
+
+    test "$#" -ne 0 || {
+        "_${BASHIONISTA_PREFIX}_default" "$@"
+        exit
+    }
+
+    BASHIONISTA_SUBCOMMAND="${1:-}";
+
+    type "${BASHIONISTA_PREFIX}_${BASHIONISTA_SUBCOMMAND:-}" &> /dev/null || {
+        "_${BASHIONISTA_PREFIX}_fallback" "$@"
+        exit
+    }
+
+    shift || true
+    "${BASHIONISTA_PREFIX}_${BASHIONISTA_SUBCOMMAND:-}" "$@"
+}
+
+BIN_FILE="$1"
+
+function bashionista_payload_subst() {
+  type bashionista_payload | tail -n +4 | head -n -1 |
+    BASHIONISTA_PREFIX="$(basename "$BIN_FILE")" \
+    BASHIONISTA_SYNOPSIS="[subcommand]" \
+    envsubst
+}
+
+[[ ${2:-} != 'bundle' ]] || {
+    echo '#!/usr/bin/env bash'
+    echo
+    cat "$1" \
+        <(bashionista_payload_subst);
+    exit
+}
+
+source "$1"; shift
+source <(bashionista_payload_subst);
