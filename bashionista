@@ -19,22 +19,38 @@ function bashionista_payload ()
             {
                 "_${name:-}_description" 2> /dev/null || true
             } | sed 's/^/  /g';
+            printf '\n';
         done | sed 's/^/  /g'
     };
-    function ${BASHIONISTA_PREFIX}_completion ()
-    {
-        ! type "_${BASHIONISTA_PREFIX}_completion" &> /dev/null || {
-            "_${BASHIONISTA_PREFIX}_completion"
-            return
-        }
-        printf 'complete -W "';
-        declare -F | while IFS='_' read -r before name; do
-            [[ "${before:-}" == *$BASHIONISTA_PREFIX ]] || continue;
-            printf '%s ' "${name:-}";
-        done;
-        printf '" ${BASHIONISTA_PREFIX};\n'
-    }
 
+
+function ${BASHIONISTA_PREFIX}_completion ()
+{
+    # Check for custom completion function and execute it if found
+    if type "_${BASHIONISTA_PREFIX}_completion" &> /dev/null; then
+        "_${BASHIONISTA_PREFIX}_completion"
+        return
+    fi
+
+    # Prepare the auto-completion for functions starting with the BASHIONISTA_PREFIX
+    local functions=($(compgen -A function "${BASHIONISTA_PREFIX}"))
+
+    if [[ ${#functions[@]} -eq 0 ]]; then
+        echo "No functions found with prefix '${BASHIONISTA_PREFIX}'"
+        return 1
+    fi
+
+    # Print completion script
+    printf 'complete -W "'
+    for func in "${functions[@]}"; do
+        printf '%s ' "${func#${BASHIONISTA_PREFIX}_}"
+    done
+    printf '" %s;\n' "${BASHIONISTA_PREFIX}"
+}
+
+}
+
+function bashionista_payload_run () {
     test "$#" -ne 0 || {
         "_${BASHIONISTA_PREFIX}_default" "$@"
         exit
@@ -51,11 +67,17 @@ function bashionista_payload ()
     "${BASHIONISTA_PREFIX}_${BASHIONISTA_SUBCOMMAND:-}" "$@"
 }
 
+function bashionista_payload_pre () {
+  function _${BASHIONISTA_PREFIX}_default () {
+    ${BASHIONISTA_PREFIX}_help "$@"
+  }
+}
+
 BIN_FILE="$1"
+export BASHIONISTA_PREFIX="$(basename "$BIN_FILE")" \
 
 function bashionista_payload_subst() {
-  type bashionista_payload | tail -n +4 | head -n -1 |
-    BASHIONISTA_PREFIX="$(basename "$BIN_FILE")" \
+  type "$1" | tail -n +4 | head -n -1 |
     BASHIONISTA_SYNOPSIS="[subcommand]" \
     envsubst
 }
@@ -63,10 +85,40 @@ function bashionista_payload_subst() {
 [[ ${2:-} != 'bundle' ]] || {
     echo '#!/usr/bin/env bash'
     echo
-    cat "$1" \
-        <(bashionista_payload_subst);
+    cat <(bashionista_payload_subst bashionista_payload_pre) \
+      <(bashionista_payload_subst bashionista_payload) \
+      "$1" \
+      <(bashionista_payload_subst bashionista_payload_run);
     exit
 }
 
-source "$1"; shift
-source <(bashionista_payload_subst);
+source <(bashionista_payload_subst bashionista_payload_pre);
+source <(bashionista_payload_subst bashionista_payload);
+
+# TODO: Check if shellcheck exists.
+# shellcheck -x "$BIN_FILE" >&2 || true
+source "$BIN_FILE"; shift
+
+[[ ${1:-} != 'repl' ]] || {
+  {
+    bash --rcfile <((
+      echo 'export PS1="${BASHIONISTA_PREFIX}> "'
+      # echo 'BASHIONISTA_REPL=1'
+      cat \
+        <(bashionista_payload_subst bashionista_payload_pre) \
+        <(bashionista_payload_subst bashionista_payload) \
+        "$BIN_FILE" \
+        <(${BASHIONISTA_PREFIX}_completion);
+      declare -F | cut -f 3 -d ' ' | grep -x "${BASHIONISTA_PREFIX}_\w*" | while read -r fn_name; do
+        printf 'alias %s="%s";\n' "${fn_name#*_}" "${fn_name:-}"
+      done
+      echo 'set +e'
+      echo 'set -o vi'
+      echo "HISTFILE='$HOME/.$BASHIONISTA_PREFIX.bash_history'"
+    ))
+  };
+  exit
+}
+
+test -n "${BASHIONISTA_REPL:-}" ||
+  source <(bashionista_payload_subst bashionista_payload_run);
